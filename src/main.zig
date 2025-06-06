@@ -31,6 +31,7 @@ pub fn main() !void {
     const entity = try registry.spawn(.{position});
     std.debug.print("Created entity: {}", .{entity});
     // add a velocity to the entity: it consumes in the previous one, and gives a new one ?
-    // const moving_entity = registry.add_components(entity, .{Velocity{ .vel = Vec3{ .x = 1.0, .y = 0.0, .z = 0.0 } }});
-
+    const velocity = Velocity{ .vel = Vec3{ .x = 1.0, .y = 0.0, .z = 0.0 } };
+    const moving_entity = registry.add_components(entity, .{velocity});
+    std.debug.print("Updated entity: {}", .{moving_entity});
 }

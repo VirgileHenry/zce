@@ -27,10 +27,7 @@ pub fn main() !void {
     defer registry.deinit();
 
     // create an entity that only has a position
-    var position = Position{ .pos = Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 } };
-    position.pos.x += 1.0;
-    // pitfall: for now, we need to pass var to spawn, otherwise it will try to create archetypes from comptime stuff
-    // ideally, spawn shall handle this case ?
+    const position = Position{ .pos = Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 } };
     const entity = try registry.spawn(.{position});
     std.debug.print("Created entity: {}", .{entity});
     // add a velocity to the entity: it consumes in the previous one, and gives a new one ?

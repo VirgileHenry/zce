@@ -5,10 +5,17 @@ const comptimePrint = std.fmt.comptimePrint;
 ///
 /// A valid archetype is a set of types, meaning that for a type to be a valid archetype,
 /// it must:
-/// - Be a tuple of types
+/// - Be a struct/tuple of types
 /// - have no duplicates
 pub fn checkArchetype(comptime archetype: type) void {
-    const fields = @typeInfo(archetype).@"struct".fields;
+    const type_info = @typeInfo(archetype);
+
+    switch (type_info) {
+        .@"struct" => {},
+        else => |other| @compileError(comptimePrint("Archetype shall be a struct/tuple of types, found {}.", .{other})),
+    }
+
+    const fields = type_info.@"struct".fields;
 
     inline for (fields) |field| {
         if (@TypeOf(field.type) != type) {

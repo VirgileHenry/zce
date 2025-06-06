@@ -37,6 +37,7 @@ fn ArchetypeBucket(comptime archetype: type) type {
 
 pub fn Registry(comptime archetypes: []const type) type {
     inline for (archetypes, 0..) |archetype, archetype_index| {
+        archetype_utils.checkArchetype(archetype);
         inline for (archetypes[0..archetype_index], 0..) |previous_archetype, previous_index| {
             if (archetype_utils.equal(archetype, previous_archetype)) {
                 @compileError(comptimePrint("Invalid archetypes for register: archetypes at index {} and {} are the same.", .{ archetype_index, previous_index }));
@@ -89,11 +90,25 @@ pub fn Registry(comptime archetypes: []const type) type {
             }
         }
 
-        pub fn spawn(self: *Self, data: anytype) !entity_utils.Entity(@TypeOf(data)) {
+        /// `findArchetype` allows to get the real archetype type in the registry from the provided anytype.
+        ///
+        /// This is necessary to bypass comptime types not being recognized as valid archetypes.
+        fn findArchetype(data: anytype) type {
             archetype_utils.checkArchetype(@TypeOf(data));
+            inline for (archetypes) |archetype| {
+                if (archetype_utils.equal(archetype, @TypeOf(data))) {
+                    return archetype;
+                }
+            }
+            @compileError(comptimePrint("No matching archetype in register for data {}.", .{@TypeOf(data)}));
+        }
+
+        pub fn spawn(self: *Self, data: anytype) !entity_utils.Entity(findArchetype(data)) {
+            const archetype = @TypeOf(data);
+            archetype_utils.checkArchetype(archetype);
             comptime var bucket_index: ?usize = null;
-            inline for (archetypes, 0..) |archetype, field_index| {
-                if (comptime archetype_utils.equal(archetype, @TypeOf(data))) {
+            inline for (archetypes, 0..) |test_archetype, field_index| {
+                if (comptime archetype_utils.equal(test_archetype, archetype)) {
                     bucket_index = field_index;
                 }
             }

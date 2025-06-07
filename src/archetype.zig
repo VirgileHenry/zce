@@ -11,7 +11,7 @@ fn typeOrd(comptime type1: type, comptime type2: type) bool {
     for (name1, name2) |char1, char2| {
         if (char1 < char2) {
             return true;
-        } else if (char2 > char1) {
+        } else if (char1 > char2) {
             return false;
         } else {
             continue;
@@ -52,69 +52,43 @@ pub fn Archetype(comptime archetype: type) type {
     comptime var ordered_fields = [_]StructField{undefined} ** fields.len;
 
     inline for (fields, 0..) |field, field_index| {
-        if (field.type != type) @compileError(comptimePrint(
-            "Unable to build archetype with non-type field: {} is {}.",
+        if (@TypeOf(field.type) != type) @compileError(comptimePrint(
+            "Unable to build archetype with non-type field: {s} is {}.",
             .{ field.name, field.type },
         ));
         ordered_fields[field_index] = field;
-        inline for (field_index - 1..0) |check_index| {
-            if (ordered_fields[check_index].type == ordered_fields[check_index + 1].type) @compileError(comptimePrint(
-                "Unable to build archetype with duplicate type at {} and {}.",
-                .{ ordered_fields[check_index].name, ordered_fields[check_index + 1].name },
+        ordered_fields[field_index].default_value_ptr = null;
+        ordered_fields[field_index].is_comptime = false;
+        inline for (0..field_index) |check_index| {
+            const rev_index = field_index - check_index - 1;
+            if (ordered_fields[rev_index].type == ordered_fields[rev_index + 1].type) @compileError(comptimePrint(
+                "Unable to build archetype with duplicate type at {s} and {s}.",
+                .{ ordered_fields[rev_index].name, ordered_fields[rev_index + 1].name },
             ));
-            if (comptime typeOrd(ordered_fields[check_index + 1].type, ordered_fields[check_index])) {
-                const temp = ordered_fields[check_index + 1];
-                ordered_fields[check_index + 1] = ordered_fields[check_index];
-                ordered_fields[check_index] = temp;
+            if (comptime typeOrd(ordered_fields[rev_index + 1].type, ordered_fields[rev_index].type)) {
+                const temp = ordered_fields[rev_index + 1];
+                ordered_fields[rev_index + 1] = ordered_fields[rev_index];
+                ordered_fields[rev_index] = temp;
             }
         }
     }
+    inline for (0..ordered_fields.len) |index| {
+        ordered_fields[index].name = comptimePrint("{}", .{index});
+    }
 
     return @Type(Type{
-        .@"struct"{
+        .@"struct" = Type.Struct{
             .layout = Type.ContainerLayout.auto,
             .backing_integer = null,
-            .fields = ordered_fields,
-            .decls = {},
+            .fields = &ordered_fields,
+            .decls = &[0]Type.Declaration{},
             .is_tuple = true,
         },
     });
 }
 
-/// Raises a compile error if the provided archetype type can't be used as a valid archetype.
-///
-/// A valid archetype is a set of types, meaning that for a type to be a valid archetype,
-/// it must:
-/// - Be a struct/tuple of types
-/// - have no duplicates
-pub fn checkArchetype(comptime archetype: type) void {
-    const type_info = @typeInfo(archetype);
-
-    switch (type_info) {
-        .@"struct" => {},
-        else => |other| @compileError(comptimePrint("Archetype shall be a struct/tuple of types, found {}.", .{other})),
-    }
-
-    const fields = type_info.@"struct".fields;
-
-    inline for (fields) |field| {
-        if (@TypeOf(field.type) != type) {
-            @compileError(comptimePrint("Archetype is not a valid archetype: field {s} is of type {s}", .{ field.name, @typeName(field.type) }));
-        }
-    }
-
-    inline for (fields, 0..) |field, field_index| {
-        inline for (0..field_index) |check_index| {
-            if (field.type == fields[check_index].type) {
-                @compileError(comptimePrint("Archetype is not a valid archetype: index {} and {} are both of type {s}", .{ field_index, check_index, @typeName(field.type) }));
-            }
-        }
-    }
-}
-
 fn typeInArchetype(comptime archetype: type, comptime @"type": type) bool {
-    checkArchetype(archetype);
-    const fields = @typeInfo(archetype).@"struct".fields;
+    const fields = @typeInfo(Archetype(archetype)).@"struct".fields;
 
     inline for (fields) |field| {
         if (field.type == @"type") return true;
@@ -123,28 +97,8 @@ fn typeInArchetype(comptime archetype: type, comptime @"type": type) bool {
     return false;
 }
 
-pub fn exclusive(comptime archetype1: type, comptime archetype2: type) bool {
-    checkArchetype(archetype1);
-    checkArchetype(archetype2);
-
-    const fields1 = @typeInfo(archetype1).@"struct".fields;
-    inline for (fields1) |field1| {
-        if (typeInArchetype(archetype2, field1.type)) return false;
-    }
-
-    const fields2 = @typeInfo(archetype2).@"struct".fields;
-    inline for (fields2) |field2| {
-        if (typeInArchetype(archetype1, field2.type)) return false;
-    }
-
-    return true;
-}
-
 pub fn isSub(comptime sub: type, comptime super: type) bool {
-    checkArchetype(sub);
-    checkArchetype(super);
-
-    const sub_fields = @typeInfo(sub).@"struct".fields;
+    const sub_fields = @typeInfo(Archetype(sub)).@"struct".fields;
 
     inline for (sub_fields) |sub_field| {
         if (!typeInArchetype(super, sub_field.type)) return false;
@@ -154,22 +108,13 @@ pub fn isSub(comptime sub: type, comptime super: type) bool {
 }
 
 pub fn equal(comptime archetype1: type, comptime archetype2: type) bool {
-    checkArchetype(archetype1);
-    checkArchetype(archetype2);
-
-    const include = isSub(archetype1, archetype2);
-    const included = isSub(archetype2, archetype1);
+    const include = isSub(Archetype(archetype1), Archetype(archetype2));
+    const included = isSub(Archetype(archetype2), Archetype(archetype1));
 
     return include and included;
 }
 
 pub fn Combined(comptime archetype1: type, comptime archetype2: type) type {
-    checkArchetype(archetype1);
-    checkArchetype(archetype2);
-    if (!exclusive(archetype1, archetype2)) {
-        @compileError(comptimePrint("Unable to combine non-exclusive archetypes: {} with {}.", .{ archetype1, archetype2 }));
-    }
-
     const archetype_info1 = @typeInfo(archetype1).@"struct";
     const archetype_info2 = @typeInfo(archetype2).@"struct";
 
@@ -196,7 +141,7 @@ pub fn Combined(comptime archetype1: type, comptime archetype2: type) type {
         combined_fields[index] = new_field;
     }
 
-    return @Type(std.builtin.Type{
+    const CombinedArchetypes = @Type(std.builtin.Type{
         .@"struct" = std.builtin.Type.Struct{
             .layout = std.builtin.Type.ContainerLayout.auto,
             .fields = &combined_fields,
@@ -204,4 +149,66 @@ pub fn Combined(comptime archetype1: type, comptime archetype2: type) type {
             .is_tuple = true,
         },
     });
+    return Archetype(CombinedArchetypes);
+}
+
+pub fn Diff(comptime archetype1: type, comptime archetype2: type) type {
+    if (!comptime isSub(archetype1, archetype2)) {
+        @compileError(comptimePrint(
+            "Can't make diff: {} is not sub of {}",
+            .{ archetype1, archetype2 },
+        ));
+    }
+
+    const archetype_info1 = @typeInfo(archetype1).@"struct";
+    const archetype_info2 = @typeInfo(archetype2).@"struct";
+
+    const dummy_field = std.builtin.Type.StructField{
+        .name = "",
+        .type = void,
+        .default_value_ptr = null,
+        .is_comptime = false,
+        .alignment = 0,
+    };
+    const total_field_count = archetype_info2.fields.len - archetype_info1.fields.len;
+    comptime var resulting_fields = [_]std.builtin.Type.StructField{dummy_field} ** total_field_count;
+    comptime var index = 0;
+
+    inline for (archetype_info2.fields) |field| {
+        if (!typeInArchetype(archetype1, field.type)) {
+            const new_field = std.builtin.Type.StructField{
+                .name = comptimePrint("{}", .{index}),
+                .type = field.type,
+                .default_value_ptr = field.default_value_ptr,
+                .is_comptime = field.is_comptime,
+                .alignment = field.alignment,
+            };
+            resulting_fields[index] = new_field;
+            index += 1;
+        }
+    }
+
+    const DiffArchetype = @Type(std.builtin.Type{
+        .@"struct" = std.builtin.Type.Struct{
+            .layout = std.builtin.Type.ContainerLayout.auto,
+            .fields = &resulting_fields,
+            .decls = &[0]std.builtin.Type.Declaration{},
+            .is_tuple = true,
+        },
+    });
+    return Archetype(DiffArchetype);
+}
+
+/// For a given archetype, returns the name of the field that matches the given type.
+pub fn typeFieldInArchetype(comptime archetype: type, comptime @"type": type) []const u8 {
+    const fields = @typeInfo(Archetype(archetype)).@"struct".fields;
+    inline for (fields) |field| {
+        if (field.type == @"type") {
+            return field.name;
+        }
+    }
+    @compileError(comptimePrint(
+        "Type {} not in archetype {}",
+        .{ @"type", archetype },
+    ));
 }

@@ -12,31 +12,36 @@ pub const RegistryError = error{
 };
 
 fn ArchetypeBucket(comptime archetype: type) type {
-    archetype_utils.checkArchetype(archetype);
-
     return struct {
         const Self = @This();
-        const Archetype = archetype;
-        const BucketType = std.AutoArrayHashMap(usize, archetype);
-        bucket: BucketType,
-        last_id: usize,
+        const Archetype = archetype_utils.Archetype(archetype);
+        bucket: std.ArrayList(archetype),
+        ids: std.ArrayList(usize),
 
         fn init(allocator: mem.Allocator) Self {
             return Self{
-                .bucket = BucketType.init(allocator),
-                .last_id = 0,
+                .bucket = std.ArrayList(archetype).init(allocator),
+                .ids = std.ArrayList(usize).init(allocator),
             };
         }
 
         fn spawn(self: *Self, data: Archetype) !entity_utils.Entity(Archetype) {
-            const id = self.last_id;
-            self.last_id += 1;
-            try self.bucket.put(id, data);
-            return entity_utils.Entity(Archetype).new(id);
+            var entity_id: usize = undefined;
+            if (self.ids.pop()) |id| {
+                self.bucket.items[id] = data;
+                entity_id = id;
+            } else {
+                const id = self.bucket.items.len;
+                try self.bucket.append(data);
+                entity_id = id;
+            }
+            return entity_utils.Entity(Archetype).new(entity_id);
         }
 
-        fn despawn(self: *Self, entity: entity_utils.Entity(Archetype)) ?Archetype {
-            return self.bucket.get(entity.id);
+        fn despawn(self: *Self, entity: entity_utils.Entity(Archetype)) !?Archetype {
+            const data = self.bucket.items[entity.id];
+            try self.ids.append(entity.id);
+            return data;
         }
 
         fn deinit(self: *Self) void {
@@ -45,9 +50,10 @@ fn ArchetypeBucket(comptime archetype: type) type {
     };
 }
 
-pub fn Registry(comptime Archetypes: []const type) type {
-    inline for (Archetypes, 0..) |archetype, archetype_index| {
-        archetype_utils.checkArchetype(archetype);
+pub fn Registry(comptime archetypes: []const type) type {
+    comptime var Archetypes = [_]type{undefined} ** archetypes.len;
+    inline for (archetypes, 0..) |archetype, archetype_index| {
+        Archetypes[archetype_index] = archetype_utils.Archetype(archetype);
         inline for (Archetypes[0..archetype_index], 0..) |previous_archetype, previous_index| {
             if (archetype_utils.equal(archetype, previous_archetype)) {
                 @compileError(comptimePrint("Invalid Archetypes for register: Archetypes at index {} and {} are the same.", .{ archetype_index, previous_index }));
@@ -109,14 +115,14 @@ pub fn Registry(comptime Archetypes: []const type) type {
         /// `findArchetype` allows to get the real archetype type in the registry from the provided anytype.
         ///
         /// This is necessary to bypass comptime types not being recognized as valid Archetypes.
-        fn findArchetype(comptime TestArchetype: type) type {
-            archetype_utils.checkArchetype(TestArchetype);
-            inline for (Archetypes) |archetype| {
-                if (archetype_utils.equal(archetype, TestArchetype)) {
-                    return archetype;
+        fn findArchetype(comptime archetype: anytype) type {
+            const Archetype = archetype_utils.Archetype(archetype);
+            inline for (Archetypes) |TestArchetype| {
+                if (archetype_utils.equal(Archetype, TestArchetype)) {
+                    return TestArchetype;
                 }
             }
-            @compileError(comptimePrint("No matching archetype in register for data {}.", .{TestArchetype}));
+            @compileError(comptimePrint("No matching archetype in register for data {}.", .{Archetype}));
         }
 
         fn findBucketIndex(comptime Archetype: type) usize {
@@ -127,44 +133,94 @@ pub fn Registry(comptime Archetypes: []const type) type {
                 }
             }
             if (bucket_index == null) {
-                @compileError(comptimePrint("Can't spawn entity: archetype not declared in the registry.", .{}));
+                @compileError(comptimePrint(
+                    "Can't find bucket index for archetype {}: not declared in the registry.",
+                    .{Archetype},
+                ));
             }
             return bucket_index.?;
         }
 
         pub fn spawn(self: *Self, data: anytype) !entity_utils.Entity(findArchetype(@TypeOf(data))) {
-            const Archetype = @TypeOf(data);
-            archetype_utils.checkArchetype(Archetype);
+            const Archetype = archetype_utils.Archetype(@TypeOf(data));
             const bucket_index = comptime findBucketIndex(Archetype);
-            const entity = try @field(self.bucket_map, comptimePrint("{}", .{bucket_index})).spawn(data);
+            var reordered_data: Archetype = undefined;
+            inline for (@typeInfo(@TypeOf(data)).@"struct".fields) |field| {
+                const field_name = comptime archetype_utils.typeFieldInArchetype(Archetype, field.type);
+                @field(reordered_data, field_name) = @field(data, field.name);
+            }
+            // @compileLog(.{ "archetype:", Archetype, "bucket:", @TypeOf(@field(self.bucket_map, comptimePrint("{}", .{bucket_index}))).Archetype });
+            const entity = try @field(self.bucket_map, comptimePrint("{}", .{bucket_index})).spawn(reordered_data);
             return entity;
         }
 
-        pub fn add_components(self: *Self, entity: anytype, data: anytype) !entity_utils.Entity(findArchetype(archetype_utils.Combined(@TypeOf(entity).Archetype, @TypeOf(data)))) {
-            archetype_utils.checkArchetype(@TypeOf(data));
-            archetype_utils.checkArchetype(@TypeOf(entity).Archetype);
+        pub fn despawn(self: *Self, entity: anytype) !@TypeOf(entity).Archetype {
+            const Archetype = @TypeOf(entity).Archetype;
+            const bucket_index = comptime findBucketIndex(Archetype);
+            return try @field(self.bucket_map, comptimePrint("{}", .{bucket_index})).despawn(entity) orelse {
+                return RegistryError.InvalidEntity;
+            };
+        }
+
+        pub fn add_components(self: *Self, entity: anytype, data: anytype) !entity_utils.Entity(
+            findArchetype(archetype_utils.Combined(
+                @TypeOf(entity).Archetype,
+                @TypeOf(data),
+            )),
+        ) {
             const Archetype = archetype_utils.Combined(@TypeOf(entity).Archetype, @TypeOf(data));
-            archetype_utils.checkArchetype(Archetype);
-
             const prev_bucket_index = comptime findBucketIndex(@TypeOf(entity).Archetype);
-            const prev_data = @field(self.bucket_map, comptimePrint("{}", .{prev_bucket_index})).despawn(entity) orelse return RegistryError.InvalidEntity;
+            const prev_data = try @field(self.bucket_map, comptimePrint(
+                "{}",
+                .{prev_bucket_index},
+            )).despawn(entity) orelse return RegistryError.InvalidEntity;
 
-            var combined_data: Archetype = undefined;
+            var new_data: Archetype = undefined;
 
-            const entity_data_fields = @typeInfo(@TypeOf(entity).Archetype).@"struct".fields;
-
-            inline for (entity_data_fields) |field| {
-                @field(combined_data, field.name) = @field(prev_data, field.name);
+            inline for (@typeInfo(@TypeOf(entity).Archetype).@"struct".fields) |field| {
+                const field_name = comptime archetype_utils.typeFieldInArchetype(Archetype, field.type);
+                @field(new_data, field_name) = @field(prev_data, field.name);
             }
-
-            inline for (@typeInfo(@TypeOf(data)).@"struct".fields, entity_data_fields.len..) |field, field_index| {
-                @field(combined_data, comptimePrint("{}", .{field_index})) = @field(data, field.name);
+            inline for (@typeInfo(@TypeOf(data)).@"struct".fields) |field| {
+                const field_name = comptime archetype_utils.typeFieldInArchetype(Archetype, field.type);
+                @field(new_data, field_name) = @field(data, field.name);
             }
 
             const new_bucket_index = comptime findBucketIndex(Archetype);
-            const new_entity = try @field(self.bucket_map, comptimePrint("{}", .{new_bucket_index})).spawn(combined_data);
+            const new_entity = try @field(self.bucket_map, comptimePrint("{}", .{new_bucket_index})).spawn(new_data);
 
             return new_entity;
+        }
+
+        pub fn remove_components(self: *Self, entity: anytype, comptime ToRemove: type) !struct {
+            entity: entity_utils.Entity(archetype_utils.Diff(ToRemove, @TypeOf(entity).Archetype)),
+            components: archetype_utils.Archetype(ToRemove),
+        } {
+            const Archetype = archetype_utils.Diff(ToRemove, @TypeOf(entity).Archetype);
+            const prev_bucket_index = comptime findBucketIndex(@TypeOf(entity).Archetype);
+            const prev_data = try @field(self.bucket_map, comptimePrint(
+                "{}",
+                .{prev_bucket_index},
+            )).despawn(entity) orelse return RegistryError.InvalidEntity;
+
+            var new_data: Archetype = undefined;
+            var removed_data: ToRemove = undefined;
+            inline for (@typeInfo(Archetype).@"struct".fields) |field| {
+                const field_name = comptime archetype_utils.typeFieldInArchetype(@TypeOf(entity).Archetype, field.type);
+                @field(new_data, field.name) = @field(prev_data, field_name);
+            }
+            inline for (@typeInfo(ToRemove).@"struct".fields) |field| {
+                const field_name = comptime archetype_utils.typeFieldInArchetype(@TypeOf(entity).Archetype, field.type);
+                @field(removed_data, field.name) = @field(prev_data, field_name);
+            }
+
+            const new_bucket_index = comptime findBucketIndex(Archetype);
+            const new_entity = try @field(self.bucket_map, comptimePrint("{}", .{new_bucket_index})).spawn(new_data);
+
+            return .{
+                .entity = new_entity,
+                .components = removed_data,
+            };
         }
     };
 }

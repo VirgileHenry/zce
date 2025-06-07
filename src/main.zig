@@ -26,12 +26,32 @@ pub fn main() !void {
     var registry = Registry.init(allocator.allocator());
     defer registry.deinit();
 
-    // create an entity that only has a position
     const position = Position{ .pos = Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 } };
-    const entity = try registry.spawn(.{position});
-    std.debug.print("Created entity: {}", .{entity});
-    // add a velocity to the entity: it consumes in the previous one, and gives a new one ?
     const velocity = Velocity{ .vel = Vec3{ .x = 1.0, .y = 0.0, .z = 0.0 } };
-    const moving_entity = registry.add_components(entity, .{velocity});
-    std.debug.print("Updated entity: {}", .{moving_entity});
+
+    // create an entity that only has a position
+    const entity = try registry.spawn(.{position});
+    std.debug.print("Created entity: {}\n", .{entity});
+
+    // add a velocity to the entity: it consumes in the previous one, and gives a new one ?
+    const moving_entity = try registry.add_components(entity, .{velocity});
+    std.debug.print("Updated entity: {}\n", .{moving_entity});
+
+    const data = try registry.despawn(moving_entity);
+    std.debug.print("Despawned entity and got back components: {}\n", .{data});
+
+    // That is illegal, and works but we should prevent that
+    // the idea is that this entity have already been moved when adding a velocity the first time
+    // There is only a shadow of it left, it shall not be used like so
+    // try registry.add_components(entity, .{velocity});
+
+    // create an already moving entity
+    const already_moving = try registry.spawn(.{ velocity, position });
+    std.debug.print("Created new entity: {}\n", .{already_moving});
+
+    // remove the velocity from the entity
+    const ent_and_vel = try registry.remove_components(already_moving, struct { Velocity });
+    const stopped_moving = ent_and_vel.entity;
+    const prev_velocity = ent_and_vel.components;
+    std.debug.print("Entity {} no more has {}\n", .{ stopped_moving, prev_velocity });
 }
